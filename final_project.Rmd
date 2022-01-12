@@ -1,0 +1,576 @@
+---
+title: "Final Project Stats for Finance"
+author: "Raphaël ADDA"
+date: "12/8/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+**Libraries importation**
+```{r}
+library(tidyverse)
+library(tidyquant) # Library which allows to obtain stock prices from yahoo finance
+library(tibbletime)
+library(ggplot2)
+library(moments)
+require(reshape2)
+library(patchwork)
+library(MASS)
+library(fGarch)
+library(functClust)
+library(ggcorrplot)
+library(quadprog)
+library(Ecdat)
+library(ggfortify)
+library(bootstrap)
+library(copula) 
+library(fGarch) 
+```
+
+
+
+
+**Creation of a dot plot theme**
+```{r}
+# create dot plot theme
+theme_dotplot <- 
+  theme_bw(7) +
+  theme(axis.text.y = element_text(size = rel(.8)), axis.ticks.y = element_blank(),
+        axis.title.x = element_text(), axis.text = element_text(face = "bold"),
+        plot.background = element_rect(fill = "lightcyan2"),
+        panel.background = element_rect(fill = "moccasin"),
+        panel.grid.major.x = element_line(size = 0.5),
+        panel.grid.major.y = element_line(size = 0.5, color = "lightblue"),
+        panel.grid.minor.x = element_blank(),
+        strip.text = element_text(size = rel(.7)), legend.position = "top")
+```
+
+
+
+
+
+
+## Importation of data
+
+We chose 15 stocks from the 1st of November 2016 to the 1st of December of 2021.
+```{r}
+tickers = c("AAPL", "NFLX", "AMZN", "JPM","SONY" ,"V","MA","MSFT","ADBE","TSLA","RKUNY","WMT","^DJI","^IXIC","BABA")
+daily_prices <- subset(tq_get(tickers,
+               from = "2016-09-01",
+               to = "2021-12-01",
+               get = "stock.prices",period = "monthly"), select = c(date,symbol,close))%>%pivot_wider(names_from = symbol, values_from = close)
+
+tickers = c("Apple", "Netflix", "Amazon", "JP Morgan Chase","Sony" ,"Visa","Mastercard","Microsoft","Adobe","Tesla","Rakuten","Walmart","Dow Jones","Nasdaq","Alibaba")
+
+colnames(daily_prices) = c("date",tickers)
+```
+
+
+We create here the dataframe of the monthly returns, using closing prices of each month.
+```{r}
+monthly_prices = as_period(as_tbl_time(daily_prices, index = date),'1 month',side = "end")
+n = dim(monthly_prices)[1]
+returns =  as.data.frame(100 * (as.matrix(monthly_prices[-1])[2:n, ] / monthly_prices[-1][1:(n-1), ] - 1))
+mu_f = 0.45
+```
+mu_f corresponds to the risk free rate.
+
+
+##Descriptive Statistics:
+```{r}
+mean_stocks = colMeans(returns)
+std_stocks = apply(returns,2,sd)
+skewness_stocks = apply(returns,2,skewness)
+kurtosis_stocks = apply(returns,2,kurtosis) + 3 #(we add 3 because the kurtosis function 
+                                                #computes the normalized kurtosis (by removing 3))
+
+mean_stocks
+std_stocks
+skewness_stocks
+kurtosis_stocks
+```
+
+
+```{r}
+df <- melt(monthly_prices ,  id.vars = 'date', variable.name = 'series')
+
+ggplot(df)+
+  geom_line(aes(date, value)) + 
+  xlab("") + facet_wrap(~series, scales = "free", ncol = 5) + ggtitle("Evolution of monthly prices") + theme_dotplot
+
+# ggsave("Evol_prices.pdf")
+```
+
+```{r}
+date_col = monthly_prices$date[2:n]
+df <- cbind.data.frame(date_col, returns)
+df <- melt(df ,  id.vars = 'date_col', variable.name = 'series')
+ggplot(df)+
+  geom_line(aes(date_col, value)) + 
+  xlab("") + facet_wrap(~series, scales = "free", ncol = 5) + ggtitle("Evolution of monthly returns")+ theme_dotplot
+
+# ggsave("Evol_returns.pdf")
+```
+
+
+```{r}
+tickers = c("AAPL", "NFLX", "AMZN", "JPM","SONY" ,"V","MA","MSFT","ADBE","TSLA","RKUNY","WMT","^DJI","^IXIC","BABA")
+daily_prices <- subset(tq_get(tickers,
+               from = "2019-12-01",
+               to = "2020-05-01",
+               get = "stock.prices",period = "monthly"), select = c(date,symbol,close))%>%pivot_wider(names_from = symbol, values_from = close)
+
+tickers = c("Apple", "Netflix", "Amazon", "JP Morgan Chase","Sony" ,"Visa","Mastercard","Microsoft","Adobe","Tesla","Rakuten","Walmart","Dow Jones","Nasdaq","Alibaba")
+
+colnames(daily_prices) = c("date",tickers)
+
+monthly_prices = as_period(as_tbl_time(daily_prices, index = date),'1 month',side = "end")
+n = dim(monthly_prices)[1]
+returns =  as.data.frame(100 * (as.matrix(monthly_prices[-1])[2:n, ] / monthly_prices[-1][1:(n-1), ] - 1))
+mu_f = 0.45
+
+normalize <- function(x) {
+  x/x[1]
+}
+df <- apply(monthly_prices[tickers] ,2,normalize)
+date_col = monthly_prices$date
+df <- cbind.data.frame(date_col, df)
+df <- melt(df ,  id.vars = 'date_col', variable.name = 'series')
+ggplot(df)+
+  geom_line(aes(date_col, value)) + 
+  xlab("") + facet_wrap(~series, ncol = 5) + ggtitle("Equity curves")+ theme_dotplot
+
+#ggsave("Equity_prices.pdf")
+```
+Because, we previously modified our dataframe, we recreate it now.
+```{r}
+tickers = c("AAPL", "NFLX", "AMZN", "JPM","SONY" ,"V","MA","MSFT","ADBE","TSLA","RKUNY","WMT","^DJI","^IXIC","BABA")
+daily_prices <- subset(tq_get(tickers,
+               from = "2016-09-01",
+               to = "2021-12-01",
+               get = "stock.prices",period = "monthly"), select = c(date,symbol,close))%>%pivot_wider(names_from = symbol, values_from = close)
+
+tickers = c("Apple", "Netflix", "Amazon", "JP Morgan Chase","Sony" ,"Visa","Mastercard","Microsoft","Adobe","Tesla","Rakuten","Walmart","Dow Jones","Nasdaq","Alibaba")
+
+colnames(daily_prices) = c("date",tickers)
+
+monthly_prices = as_period(as_tbl_time(daily_prices, index = date),'1 month',side = "end")
+n = dim(monthly_prices)[1]
+returns =  as.data.frame(100 * (as.matrix(monthly_prices[-1])[2:n, ] / monthly_prices[-1][1:(n-1), ] - 1))
+mu_f = 0.45
+```
+
+
+```{r}
+date_col = monthly_prices$date[2:n]
+df <- cbind.data.frame(date_col, returns)
+df <- melt(df ,  id.vars = 'date_col', variable.name = 'series')
+
+ggplot(df) + geom_histogram(aes (x =value)) + xlab("") + facet_wrap(~series, scales = "free", ncol = 5) + ggtitle("Histograms of monthly returns")+ theme_dotplot
+#ggsave("Histograms.pdf")
+
+```
+
+```{r}
+date_col = monthly_prices$date[2:n]
+df <- cbind.data.frame(date_col, returns)
+df <- melt(df ,  id.vars = 'date_col', variable.name = 'series')
+
+g_median <- ggplot(df) + geom_boxplot(aes (x=value,y=reorder(series,value,median))) + xlab("") + ggtitle("Boxplots of monthly returns, ordered by median")+ theme_dotplot
+
+g_mean <- ggplot(df) + geom_boxplot(aes (x=value,y=reorder(series,value,mean))) + xlab("") + ggtitle("Boxplots of monthly returns, ordered by mean")+ theme_dotplot
+
+g_median + g_mean + plot_layout()
+#ggsave("median_boxplots.pdf",g_median)
+#ggsave("mean_boxplots.pdf",g_mean)
+```
+
+
+
+```{r}
+date_col = monthly_prices$date[2:n]
+df <- cbind.data.frame(date_col, returns)
+df <- melt(df ,  id.vars = 'date_col', variable.name = 'series')
+
+ggplot(df,aes(sample =value)) + xlab("") + facet_wrap(~series, ncol = 5) +  
+  geom_qq(distribution = stats::qnorm, size = 0.5, col = 'blue', alpha = 0.5)+
+  geom_qq_line(distribution = stats::qnorm)+ 
+  ggtitle("qq-plots of monthly returns")+ 
+  theme_dotplot
+
+#ggsave("qqplots.pdf")
+```
+
+```{r}
+n = dim(returns)[1]
+min_AIC <- function(x){
+  std_AIC = 2 * stdFit(x)$objective + 2 * 3
+  ged_AIC = 2 * gedFit(x)$objective + 2 * 3
+  snorm_AIC = 2 * snormFit(x)$objective + 2 * 3
+  min_aic = min(c(std_AIC,ged_AIC,snorm_AIC))
+  print(c(std_AIC,ged_AIC,snorm_AIC))
+  ind = which.min(min_aic)
+  c('std', 'ged', 'snorm')[ind]
+}
+apply(returns,2,min_AIC)
+```
+
+```{r}
+n = dim(returns)[1]
+min_BIC <- function(x){
+  std_BIC = 2 * stdFit(x)$objective + log(n) *  3
+  ged_BIC = 2 * gedFit(x)$objective + log(n) *  3
+  snorm_BIC = 2 * snormFit(x)$objective + log(n)  * 3
+  min_bic = min(c(std_BIC,ged_BIC,snorm_BIC))
+  ind = which.min(min_bic)
+  c('std', 'ged', 'snorm')[ind]
+}
+apply(returns,2,min_BIC)
+```
+
+
+Conversion to annual mean and std
+```{r}
+annual_means = mean_stocks*12
+annual_std = std_stocks*sqrt(12)
+annual_means
+annual_std
+```
+
+Pairwise scatter plot
+
+```{r}
+pairs(returns)
+```
+
+Covariance matrix
+```{r}
+cov_stocks = cov(returns)
+cov_stocks
+```
+
+##Portfolio Theory
+
+No shorts allowed, no constraints on quantity
+```{r}
+#pdf(file="eff_front.pdf")
+Amat = cbind(rep(1, length(mean_stocks)), mean_stocks) # set the constraints matrix
+Amat = cbind(cbind(Amat,diag(length(mean_stocks))),-diag(length(mean_stocks))) # set the constraints matrix
+muP = seq(min(mean_stocks)+0.0001,max(mean_stocks)-0.00001,length = 300) # target portfolio means
+# for the expect portfolio return
+sdP = muP # set up storage for std dev’s of portfolio returns
+weights = matrix(0, nrow = 300, ncol = length(mean_stocks)) # storage for weights
+for (i in 1:length(muP)) # find the optimal portfolios
+{
+  bvec = c(1,muP[i],rep(0,length(mean_stocks)),rep(-1,length(mean_stocks)))# constraint vector
+  result = 
+    solve.QP(Dmat = 2 * cov_stocks, dvec = rep(0, length(mean_stocks)), Amat = Amat, bvec = bvec, meq = 2)
+  
+  sdP[i] = sqrt(result$value)
+  weights[i,] = result$solution
+}
+plot(sdP, muP, type = "l", xlim = c(0, 12),ylim = c(0, 6), lty = 3)# plot efficient frontier (and inefficient portfolios below the min var portfolio)
+mu_f = 0.45  # input value of risk-free interest rate
+points(0, mu_f, cex = 6, pch = ".") # show risk-free asset
+sharpe = (muP - mu_f) / sdP # compute Sharpe’s ratios
+ind = (sharpe == max(sharpe)) # Find maximum Sharpe’s ratio
+lines(c(0, 12), mu_f + c(0, 12) * (muP[ind] - mu_f) / sdP[ind],lwd = 4, lty = 1, col = "blue")
+points(sdP[ind], muP[ind], cex = 4, pch = "*")
+ind2 = (sdP == min(sdP)) # find minimum variance portfolio
+points(sdP[ind2], muP[ind2], cex = 2, pch = "+")
+ind3 = (muP > muP[ind2])
+lines(sdP[ind3], muP[ind3], type = "l", xlim = c(0, 12),ylim = c(0, 6), lwd = 3, col = "red") # plot efficient frontier
+legend(0, 6, legend=c("efficient frontier", "efficient portfolios"),
+       col=c("red","black"), lty=c(1,2), cex=0.8)
+# + is the mvp portfolio, * is the tangency portfolio
+#Efficient frontier (solid, red), line of efficient portfolios (dashed black) connecting the risk-free asset and tangency portfolio (*), and the minimum variance portfolio (+) with all the six stocks. (Theyre are also shown on reward-risk space).
+
+print("The tangency portfolio is (in percents): ")
+print(weights[ind, ]*100)
+print("The minimum variance portfolio is (in percents): ")
+print(weights[ind2, ]*100)
+#dev.off()
+
+sd_mvp = sdP[ind2]
+mean_mvp = muP[ind2]
+sd_t = sdP[ind]
+mean_t = muP[ind]
+sharp_mvp = (mean_mvp - mu_f)/sd_mvp
+sharp_t = (mean_t - mu_f)/sd_t
+
+weights_Tangency = weights[ind, ]*100
+mean_mvp
+sd_mvp
+sharp_mvp
+mean_t
+sd_t
+sharp_t
+```
+
+```{r}
+sharpe_returns = (mean_stocks - mu_f) / std_stocks
+sharpe_returns
+
+sharpe_tangency = max(sharpe)
+sharpe_tangency
+
+```
+
+
+Expected Shortfall and Value at Risk
+```{r}
+MVP_returns = as.matrix(returns) %*% as.matrix(weights[ind2,]) 
+Tangency_returns = as.matrix(returns) %*% as.matrix(weights[ind,]) 
+VaR_function <- function(x){
+  S0 = 100000
+  alpha = 0.05
+  q= as.numeric(quantile(x , alpha))
+  VaR = -S0 * q/100
+  return(VaR)
+}
+
+apply(returns,2,VaR_function)
+VaR_function(MVP_returns)
+VaR_function(Tangency_returns)
+
+ES_function <- function(x){
+  S0 = 100000
+  alpha = 0.05
+  q= as.numeric(quantile(x , alpha))
+  IEVaR = (x  < q)
+  ES = (-S0 * sum(x  * IEVaR) / sum(IEVaR))/100
+  return(ES)
+}
+apply(returns,2,ES_function)
+ES_function(MVP_returns)
+```
+
+
+shorts allowed (limited to -10% per stocks)
+```{r}
+#pdf(file="eff_front_short.pdf")
+Amat = cbind(rep(1, length(mean_stocks)), mean_stocks) # set the constraints matrix
+Amat = cbind(cbind(Amat,diag(length(mean_stocks))),-diag(length(mean_stocks))) # set the constraints matrix
+muP = seq(min(mean_stocks)+0.0001,max(mean_stocks)-0.00001,length = 300) # target portfolio means
+# for the expect portfolio return
+sdP = muP # set up storage for std dev’s of portfolio returns
+weights = matrix(0, nrow = 300, ncol = length(mean_stocks)) # storage for weights
+for (i in 1:length(muP)) # find the optimal portfolios
+{
+  bvec = c(1,muP[i],rep(-0.1,length(mean_stocks)),rep(-1,length(mean_stocks)))# constraint vector
+  result = 
+    solve.QP(Dmat = 2 * cov_stocks, dvec = rep(0, length(mean_stocks)), Amat = Amat, bvec = bvec, meq = 2)
+  
+  sdP[i] = sqrt(result$value)
+  weights[i,] = result$solution
+}
+plot(sdP, muP, type = "l", xlim = c(0, 12),ylim = c(0, 6), lty = 3)# plot efficient frontier (and inefficient portfolios below the min var portfolio)
+mu_f = 0.45  # input value of risk-free interest rate
+points(0, mu_f, cex = 6, pch = ".") # show risk-free asset
+sharpe = (muP - mu_f) / sdP # compute Sharpe’s ratios
+ind = (sharpe == max(sharpe)) # Find maximum Sharpe’s ratio
+lines(c(0, 12), mu_f + c(0, 12) * (muP[ind] - mu_f) / sdP[ind],lwd = 4, lty = 1, col = "blue")
+points(sdP[ind], muP[ind], cex = 4, pch = "*")
+ind2 = (sdP == min(sdP)) # find minimum variance portfolio
+points(sdP[ind2], muP[ind2], cex = 2, pch = "+")
+ind3 = (muP > muP[ind2])
+lines(sdP[ind3], muP[ind3], type = "l", xlim = c(0, 12),ylim = c(0, 6), lwd = 3, col = "red") # plot efficient frontier
+legend(0, 6, legend=c("efficient frontier", "efficient portfolios"),
+       col=c("red","black"), lty=c(1,2), cex=0.8)
+# + is the mvp portfolio, * is the tangency portfolio
+#Efficient frontier (solid, red), line of efficient portfolios (dashed black) connecting the risk-free asset and tangency portfolio (*), and the minimum variance portfolio (+) with all the six stocks. (Theyre are also shown on reward-risk space).
+
+print("The tangency portfolio is (in percents): ")
+print(weights[ind, ]*100)
+print("The minimum variance portfolio is (in percents): ")
+print(weights[ind2, ]*100)
+
+
+#dev.off()
+
+sd_mvp_short = sdP[ind2]
+mean_mvp_short = muP[ind2]
+sd_t_short = sdP[ind]
+mean_t_short = muP[ind]
+sharp_mvp_short = (mean_mvp - mu_f)/sd_mvp
+sharp_t_short = (mean_t - mu_f)/sd_t
+
+mean_mvp_short
+sd_mvp_short
+sharp_mvp_short
+mean_t_short
+sd_t_short
+sharp_t
+```
+
+
+```{r}
+sharpe_returns = (mean_stocks - mu_f) / std_stocks
+sharpe_returns
+
+sharpe_tangency = max(sharpe)
+sharpe_tangency
+```
+
+
+```{r}
+MVP_returns = as.matrix(returns) %*% as.matrix(weights[ind2,]) 
+tangency_returns = as.matrix(returns) %*% as.matrix(weights[ind,])
+apply(returns,2,VaR_function)
+VaR_function(MVP_returns)
+VaR_function(Tangency_returns)
+
+apply(returns,2,ES_function)
+ES_function(MVP_returns)
+```
+
+##Asset Allocation
+
+Without risk free asset
+```{r}
+mu_p = 0.5
+Amat = cbind(rep(1, length(mean_stocks)), mean_stocks) # set the constraints matrix
+Amat = cbind(cbind(Amat,diag(length(mean_stocks))),-diag(length(mean_stocks))) # set the constraints matrix
+# for the expect portfolio return
+weights = rep(0,length(mean_stocks))
+bvec = c(1,mu_p,rep(0,length(mean_stocks)),rep(-1,length(mean_stocks))) # constraint vector
+result = solve.QP(Dmat = 2 * cov_stocks, dvec = rep(0, length(mean_stocks)), Amat = Amat, bvec = bvec, meq = 2)
+std_port = sqrt(result$value)
+weights = result$solution
+
+weights*100
+std_port
+port = as.matrix(returns)%*%weights
+VaR_function(port)
+ES_function(port)
+```
+
+With risk free asset
+```{r}
+mu_p = 0.5
+theta = (mu_p - mu_f)/(mean_t - mu_f)
+
+w = c((1-theta)*100, theta*weights_Tangency)
+w
+std_port = sd_t*theta
+port = cbind(rep(mu_f,n),as.matrix(returns))%*%(w/100)
+mean(port)
+std_port
+sd(port)
+VaR_function(port)
+ES_function(port)
+```
+
+
+##Principal Component Analysis
+Correlation matrix heatmap
+```{r}
+corr_stocks = cor(returns)
+pdf(file="corr_mat.pdf")
+ggcorrplot(corr_stocks, hc.order = TRUE, type = "lower",
+   lab = TRUE,lab_size = 2)
+dev.off()
+```
+pca
+```{r}
+pdf(file="pca.pdf")
+pca = prcomp(returns, scale = TRUE)
+autoplot(pca, data=returns, loadings=TRUE,loadings.label=TRUE)
+dev.off()
+```
+
+```{r}
+pca = prcomp(returns, scale = TRUE)
+autoplot(pca, data=returns, loadings=TRUE,loadings.label=TRUE,x=1,y=3)
+```
+
+```{r}
+pca = prcomp(returns, scale = TRUE)
+autoplot(pca, data=returns, loadings=TRUE,loadings.label=TRUE,x=2,y=3)
+```
+
+factor analysis
+```{r}
+factanal(x = returns, factors = 5)
+```
+
+
+##Risk Management
+
+Non-Parametric VaR and ES
+```{r}
+VaR_function <- function(x){
+  S0 = 100000
+  alpha = 0.05
+  q= as.numeric(quantile(x , alpha))
+  VaR = -S0 * q/100
+  return(VaR)
+}
+
+ES_function <- function(x){
+  S0 = 100000
+  alpha = 0.05
+  q= as.numeric(quantile(x , alpha))
+  IEVaR = (x  < q)
+  ES = (-S0 * sum(x  * IEVaR) / sum(IEVaR))/100
+  return(ES)
+}
+
+apply(returns,2,VaR_function)
+apply(returns,2,ES_function)
+```
+
+
+Parametric VaR and ES
+```{r}
+VaR_function_parametric <- function(x){
+  S0 = 100000
+  alpha = 0.05
+  mu = mean(x)
+  sigma = sd(x)
+  q = qnorm(alpha)
+  VaR = -S0 * (mu + q*sigma)/100
+  return(VaR)
+}
+
+ES_function_parametric <- function(x){
+  S0 = 100000
+  alpha = 0.05
+  q = qnorm(alpha)
+  ES = S0*(-mu + sigma * dnorm(q)/alpha)/100
+  return(ES)
+}
+
+apply(returns,2,VaR_function_parametric)
+apply(returns,2,ES_function)
+```
+
+
+##Copulas
+```{r}
+ranker <- function(x){
+  rank(x)/(length(x)+1)
+}
+df = apply(returns,2,ranker)
+m = length(tickers)
+fnorm = fitCopula(copula=normalCopula(dim=m),data=df,method="ml")
+ffrank = fitCopula(copula = frankCopula(3, dim = m),
+                     data = df, method = "ml")
+fclayton = fitCopula(copula = claytonCopula(1, dim=m),
+                     data = df, method = "ml")
+fgumbel = fitCopula(copula = gumbelCopula(3, dim=m),
+                    data = df, method = "ml")
+fjoe = fitCopula(copula=joeCopula(2,dim=m),data=df,method="ml")
+
+fnorm
+ffrank
+fclayton
+fgumbel
+fjoe
+
+```
